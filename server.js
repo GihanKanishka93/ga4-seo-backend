@@ -19,7 +19,7 @@ const app = express();
 app.use(express.json());
 
 app.use(cors({
-  origin: 'https://darkseagreen-cobra-566406.hostingersite.com/', // ✅ Replace with your actual frontend domain
+  origin: 'https://darkseagreen-cobra-566406.hostingersite.com', // ✅ Replace with your actual frontend domain
   credentials: true
 }));
 
@@ -49,7 +49,7 @@ app.get('/auth/callback', async (req, res) => {
   try {
     await setCredentialsFromCode(code);
     req.session.authenticated = true;
-    res.redirect('https://darkseagreen-cobra-566406.hostingersite.com/'); // ✅ Update to your real frontend
+    res.redirect('https://darkseagreen-cobra-566406.hostingersite.com'); // ✅ Update to your real frontend
   } catch (error) {
     console.error('OAuth Error:', error);
     res.status(500).send('Authentication failed');

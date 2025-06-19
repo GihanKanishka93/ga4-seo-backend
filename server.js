@@ -1,40 +1,77 @@
 const express = require('express');
 const cors = require('cors');
-const open = require('open');
+const session = require('express-session');
 const axios = require('axios');
-const { isAuthenticated, refreshIfNeeded } = require('./oauth2');
 const { google } = require('googleapis');
-const { getAuthUrl, setCredentialsFromCode, getClient } = require('./oauth2');
+const {
+  getAuthUrl,
+  setCredentialsFromCode,
+  getClient,
+  refreshIfNeeded,
+  isAuthenticated
+} = require('./oauth2');
+
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
 
-let accessGranted = false;
+// ======== Middleware ========
+app.use(express.json());
 
-app.get('/auth', async (req, res) => {
-  const url = getAuthUrl();
-  await open(url);
-  res.send('OAuth consent screen opened. Check your browser.');
+app.use(cors({
+  origin: 'https://darkseagreen-cobra-566406.hostingersite.com/', // ✅ Replace with your actual frontend domain
+  credentials: true
+}));
+
+app.use(session({
+  secret: 'super-strong-session-secret', // ✅ Replace with env var in production
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: true,
+    sameSite: 'none'
+  }
+}));
+
+// ======== Routes ========
+
+app.get('/', (req, res) => {
+  res.send('✅ Backend is running');
 });
 
-app.get('/oauth2callback', async (req, res) => {
+app.get('/auth', (req, res) => {
+  const url = getAuthUrl();
+  res.redirect(url);
+});
+
+app.get('/auth/callback', async (req, res) => {
   const code = req.query.code;
   try {
     await setCredentialsFromCode(code);
-    accessGranted = true;
-    res.send('Authentication successful. You can now close this window.');
+    req.session.authenticated = true;
+    res.redirect('https://darkseagreen-cobra-566406.hostingersite.com/'); // ✅ Update to your real frontend
   } catch (error) {
     console.error('OAuth Error:', error);
     res.status(500).send('Authentication failed');
   }
 });
 
+app.get('/api/authenticated', async (req, res) => {
+  try {
+    if (!req.session.authenticated) {
+      return res.status(401).json({ authenticated: false });
+    }
+    await refreshIfNeeded(); // optional safeguard
+    return res.json({ authenticated: true });
+  } catch (e) {
+    return res.status(500).json({ authenticated: false });
+  }
+});
+
 app.get('/api/properties', async (req, res) => {
-  if (!accessGranted) return res.status(401).send('Unauthorized');
+  if (!req.session.authenticated) return res.status(401).send('Unauthorized');
 
   const analyticsAdmin = google.analyticsadmin('v1alpha');
-
   try {
     const accountsResponse = await analyticsAdmin.accounts.list({ auth: getClient() });
     const accounts = accountsResponse.data.accounts || [];
@@ -65,7 +102,7 @@ app.get('/api/properties', async (req, res) => {
 });
 
 app.get('/api/metrics/:propertyId', async (req, res) => {
-  if (!accessGranted) return res.status(401).send('Unauthorized');
+  if (!req.session.authenticated) return res.status(401).send('Unauthorized');
 
   const { propertyId } = req.params;
   const { startDate, endDate, metrics = 'activeUsers', channel = '', trafficSource = '' } = req.query;
@@ -138,7 +175,7 @@ app.get('/api/metrics/:propertyId', async (req, res) => {
 });
 
 app.get('/api/event-comparison-multi/:propertyId', async (req, res) => {
-  if (!accessGranted) return res.status(401).send('Unauthorized');
+  if (!req.session.authenticated) return res.status(401).send('Unauthorized');
 
   const propertyId = req.params.propertyId;
   const today = new Date();
@@ -152,7 +189,6 @@ app.get('/api/event-comparison-multi/:propertyId', async (req, res) => {
     startDate3 = format(new Date(today.getFullYear(), today.getMonth(), 1)),
     endDate3 = format(today),
     trafficSource = ''
-    
   } = req.query;
 
   const keywords = trafficSource
@@ -163,51 +199,50 @@ app.get('/api/event-comparison-multi/:propertyId', async (req, res) => {
   const oauthClient = getClient();
   const { token } = await oauthClient.getAccessToken();
 
- const fetchEvents = async (startDate, endDate) => {
-  const request = {
-    dateRanges: [{ startDate, endDate }],
-    metrics: [{ name: 'sessions' }],
-    dimensions: [{ name: 'sessionSource' }],
-    orderBys: [{ metric: { metricName: 'sessions' }, desc: true }]
-  };
+  const fetchEvents = async (startDate, endDate) => {
+    const request = {
+      dateRanges: [{ startDate, endDate }],
+      metrics: [{ name: 'sessions' }],
+      dimensions: [{ name: 'sessionSource' }],
+      orderBys: [{ metric: { metricName: 'sessions' }, desc: true }]
+    };
 
-if (keywords.length > 0) {
-  request.dimensions.push({ name: 'sessionSource' });
-  request.dimensionFilter = {
-    filter: {
-      fieldName: 'sessionSource',
-      stringFilter: {
-        matchType: 'REGEXP',
-        value: keywords.join('|'),
-        caseSensitive: false
-      }
+    if (keywords.length > 0) {
+      request.dimensions.push({ name: 'sessionSource' });
+      request.dimensionFilter = {
+        filter: {
+          fieldName: 'sessionSource',
+          stringFilter: {
+            matchType: 'REGEXP',
+            value: keywords.join('|'),
+            caseSensitive: false
+          }
+        }
+      };
     }
-  };
-}
 
-
-  const response = await axios.post(
-    `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
-    request,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
+    const response = await axios.post(
+      `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
+      request,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
       }
-    }
-  );
+    );
 
-  return (response.data.rows || []).map(row => ({
-    name: row.dimensionValues[0]?.value,
-    count: Number(row.metricValues[0]?.value)
-  }));
-};
+    return (response.data.rows || []).map(row => ({
+      name: row.dimensionValues[0]?.value,
+      count: Number(row.metricValues[0]?.value)
+    }));
+  };
 
   try {
     const [data1, data2, data3] = await Promise.all([
       fetchEvents(startDate1, endDate1),
       fetchEvents(startDate2, endDate2),
-      fetchEvents(startDate3, endDate3),
+      fetchEvents(startDate3, endDate3)
     ]);
 
     const combined = {};
@@ -239,18 +274,8 @@ if (keywords.length > 0) {
   }
 });
 
-app.get('/api/authenticated', async (req, res) => {
-  try {
-    if (!isAuthenticated()) return res.status(401).json({ authenticated: false });
-    await refreshIfNeeded();
-    return res.json({ authenticated: true });
-  } catch (e) {
-    return res.status(500).json({ authenticated: false });
-  }
-});
-
+// ======== Start Server ========
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`✅ Server running at http://localhost:${PORT}`);
-  console.log(`🔐 Start auth at: http://localhost:${PORT}/auth`);
 });

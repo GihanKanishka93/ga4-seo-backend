@@ -5,8 +5,9 @@ require('dotenv').config();
 const oauth2Client = new google.auth.OAuth2(
   process.env.CLIENT_ID,
   process.env.CLIENT_SECRET,
-  'https://ga4-seo-backend.onrender.com/auth/callback'
+  process.env.REDIRECT_URI
 );
+
 
 
 let savedTokens = null;
